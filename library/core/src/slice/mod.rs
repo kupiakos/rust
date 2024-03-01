@@ -3612,18 +3612,6 @@ impl<T> [T] {
     where
         T: Copy,
     {
-        // The panic code path was put into a cold function to not bloat the
-        // call site.
-        #[inline(never)]
-        #[cold]
-        #[track_caller]
-        fn len_mismatch_fail(dst_len: usize, src_len: usize) -> ! {
-            panic!(
-                "source slice length ({}) does not match destination slice length ({})",
-                src_len, dst_len,
-            );
-        }
-
         if self.len() != src.len() {
             len_mismatch_fail(self.len(), src.len());
         }
@@ -4654,7 +4642,9 @@ where
 {
     #[track_caller]
     default fn spec_clone_from(&mut self, src: &[T]) {
-        assert!(self.len() == src.len(), "destination and source slices have different lengths");
+        if self.len() != src.len() {
+            len_mismatch_fail(self.len(), src.len())
+        }
         // NOTE: We need to explicitly slice them to the same length
         // to make it easier for the optimizer to elide bounds checking.
         // But since it can't be relied on we also have an explicit specialization for T: Copy.
@@ -4739,6 +4729,18 @@ fn get_many_check_valid<const N: usize>(indices: &[usize; N], len: usize) -> boo
         }
     }
     valid
+}
+
+// The panic code path was put into a cold function to not bloat the
+// call site.
+#[inline(never)]
+#[cold]
+#[track_caller]
+fn len_mismatch_fail(dst_len: usize, src_len: usize) -> ! {
+    panic!(
+        "source slice length ({}) does not match destination slice length ({})",
+        src_len, dst_len,
+    );
 }
 
 /// The error type returned by [`get_many_mut<N>`][`slice::get_many_mut`].
