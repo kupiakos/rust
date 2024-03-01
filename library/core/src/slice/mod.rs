@@ -6,6 +6,7 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::cell::Cell;
 use crate::cmp::Ordering::{self, Equal, Greater, Less};
 use crate::fmt;
 use crate::hint;
@@ -3624,6 +3625,53 @@ impl<T> [T] {
         }
     }
 
+    /// Copies all elements from the cells in `src` into `self`, using a memcpy.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// // In real code, this slice of cells might come from elsewhere.
+    /// let src = &Cell::new([5, 6, 7]);
+    /// let src = src.as_slice_of_cells();
+    ///
+    /// let mut dst = [0, 1, 2, 3, 4, 5];
+    /// dst[2..5].copy_from_slice_of_cells(src);
+    /// assert_eq!(dst, [0, 1, 5, 6, 7, 5]);
+    ///
+    /// // Because src and dst are the same length and can't alias,
+    /// // this is semantically the same thing:
+    /// dst[2..5].iter_mut().zip(src).for_each(|(d, s)| *d = s.get());
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn copy_from_slice_of_cells(&mut self, src: &[Cell<T>])
+    where
+        T: Copy,
+    {
+        if self.len() != src.len() {
+            len_mismatch_fail(self.len(), src.len());
+        }
+
+        // SAFETY:
+        // - `self` is valid for `self.len()` elements by definition
+        // - `src` was checked to have the same length
+        // - The slices cannot overlap because mutable references are exclusive
+        // - `T: Copy` so copying their bits is valid.
+        // - `Cell<T>` has the same layout as `T`
+        // - Data races are impossible because `Cell` is `!Sync`
+        unsafe {
+            ptr::copy_nonoverlapping(src.as_ptr().cast(), self.as_mut_ptr(), self.len());
+        }
+    }
+
     /// Copies elements from one part of the slice to another part of itself,
     /// using a memmove.
     ///
@@ -3724,6 +3772,48 @@ impl<T> [T] {
         // mutable references are exclusive.
         unsafe {
             ptr::swap_nonoverlapping(self.as_mut_ptr(), other.as_mut_ptr(), self.len());
+        }
+    }
+
+    /// Swaps all elements in `self` with the cells inside `other`.
+    ///
+    /// The length of `other` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// // In real code, this slice of cells might come from elsewhere.
+    /// let other: &Cell<[_]> = &Cell::new([5, 6, 7, 8]);
+    /// let other = other.as_slice_of_cells();
+    /// let mut slice = [0, 1, 2, 3];
+    ///
+    /// slice[1..3].swap_with_slice_of_cells(&other[..2]);
+    /// assert_eq!(slice, [0, 5, 6, 3]);
+    /// assert_eq!(other, Cell::new([5, 1, 2, 8]).as_slice_of_cells());
+    ///
+    /// // Because src and dst are the same length and can't alias,
+    /// // this is semantically the same thing:
+    /// slice[1..3]
+    ///     .iter_mut()
+    ///     .zip(other[..2].iter())
+    ///     .for_each(|(a, b)| Cell::from_mut(a).swap(b));
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn swap_with_slice_of_cells(&mut self, other: &[Cell<T>]) {
+        assert!(self.len() == other.len(), "destination and source slices have different lengths");
+        let other = slice_of_cells_as_mut_ptr(other);
+        // SAFETY: `self` is valid for `self.len()` elements by definition, and `src` was
+        // checked to have the same length. The slices cannot overlap because
+        // mutable references are exclusive. Data races are impossible because `Cell: !Sync`.
+        unsafe {
+            ptr::swap_nonoverlapping(self.as_mut_ptr(), other, self.len());
         }
     }
 
@@ -4574,6 +4664,213 @@ impl<T, const N: usize> [[T; N]] {
     }
 }
 
+impl<T> [Cell<T>] {
+    /// Copies all elements from the cells in `src` into the cells in `self`, using a memmove.
+    ///
+    /// This can be called with a `&` reference, and the slices may overlap.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Examples
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// let data = &Cell::new([0, 1, 2, 3, 4, 5]);
+    /// let data = data.as_slice_of_cells();
+    ///
+    /// data[..4].copy_to_cells_from_slice_of_cells(&data[2..]);
+    /// assert_eq!(data, Cell::new([0, 1, 0, 1, 2, 3]).as_slice_of_cells());
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn copy_to_cells_from_slice_of_cells(&self, src: &[Cell<T>])
+    where
+        T: Copy,
+    {
+        if self.len() != src.len() {
+            len_mismatch_fail(self.len(), src.len());
+        }
+
+        let len = self.len();
+        let dst = slice_of_cells_as_mut_ptr(self);
+
+        // SAFETY:
+        // - `self` is valid for `self.len()` elements by definition
+        // - `src` was checked to have the same length as `self`
+        // - `T: Copy` so copying their bits is valid
+        // - `Cell<T>` has the same layout as `T`
+        // - Data races are impossible because `Cell` is `!Sync`
+        unsafe {
+            ptr::copy(src.as_ptr().cast(), dst, len);
+        }
+    }
+
+    /// Copies all elements from `src` into the cells in `self`.
+    ///
+    /// The length of `src` must be the same as `self`.
+    ///
+    /// This can be called with a `&` reference.
+    ///
+    /// # Overlapping `self` and `src`
+    ///
+    /// Currently Rust does not allow for `Copy` types to contain `UnsafeCell`.
+    /// If `self` and `src` overlapped, then the mutation performed by the copy would
+    /// mutate the memory behind a `&[T]` that is still live, which is undefined behavior.
+    ///
+    /// A `&[T]` and `&[Cell<T>]` that overlap cannot arise in safe Rust. While it may be
+    /// possible to construct these via `unsafe`, it is the responsibility of the caller of
+    /// [`from_raw_parts`] to ensure that a `&[T]` is not mutated for its lifetime unless behind
+    /// an `UnsafeCell`.
+    ///
+    /// With these constraints, this function uses [`ptr::copy_nonoverlapping`] internally.
+    /// If the Rust changes to allow types containing `UnsafeCell` to `impl Copy`,
+    /// this function's implementation will change to allow for overlapping `self` and `src`
+    /// in these cases.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Examples
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// // In real code this slice of cells might come from elsewhere.
+    /// let dst = &Cell::new([0, 1, 2, 3, 4, 5]);
+    /// let dst = dst.as_slice_of_cells();
+    ///
+    /// let src = [10, 20, 30];
+    /// dst[1..4].copy_to_cells_from_slice(src);
+    /// assert_eq!(dst, Cell::new([0, 10, 20, 30, 4, 5]).as_slice_of_cells());
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn copy_to_cells_from_slice(&self, src: &[T])
+    where
+        T: Copy,
+    {
+        if self.len() != src.len() {
+            len_mismatch_fail(self.len(), src.len());
+        }
+
+        let len = self.len();
+        let dst = slice_of_cells_as_mut_ptr(self);
+
+        // SAFETY:
+        // - `self` is valid for `self.len()` elements by definition
+        // - `src` was checked to have the same length as `self`
+        // - `T: Copy` so copying their bits is valid
+        // - `Cell<T>` has identical layout to `T`
+        // - Data races are impossible because `Cell` is `!Sync`
+        // - There is no safe way to construct aliasing `&[T]` and `&[Cell<T>]`.
+        //   Under Tree Borrows, it is sound to construct aliasing slices like this,
+        //   but it is the user's responsibility to ensure that the `&[T]` is not mutated
+        //   while it is live (where `T` contains no interior mutability).
+        //
+        // In a future where `Cell<T: Copy>: Copy`, this implementation would need to switch to
+        // using `ptr::copy`, possibly depending on whether `T` contains interior mutability.
+        unsafe {
+            ptr::copy_nonoverlapping(src.as_ptr(), dst, len);
+        }
+    }
+
+    /// Swaps all elements in `self` with the cells inside `other`.
+    ///
+    /// The length of `other` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// // In real code, this slice of cells might come from elsewhere.
+    /// let other: &Cell<[_]> = &Cell::new([5, 6, 7, 8]);
+    /// let other = other.as_slice_of_cells();
+    /// let mut slice = [0, 1, 2, 3];
+    ///
+    /// slice[1..3].swap_with_slice_of_cells(&other[..2]);
+    /// assert_eq!(slice, [0, 5, 6, 3]);
+    /// assert_eq!(other, Cell::new([5, 1, 2, 8]).as_slice_of_cells());
+    ///
+    /// // Because src and dst are the same length and can't alias,
+    /// // this is semantically the same thing:
+    /// slice[1..3]
+    ///     .iter_mut()
+    ///     .zip(other[..2].iter())
+    ///     .for_each(|(a, b)| Cell::from_mut(a).swap(b));
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn swap_cells_with_slice(&self, other: &[Cell<T>]) {
+        assert!(self.len() == other.len(), "destination and source slices have different lengths");
+        let len = self.len();
+        let self_ptr = slice_of_cells_as_mut_ptr(self);
+        let other = slice_of_cells_as_mut_ptr(other);
+
+        // SAFETY:
+        // - `self` is valid for `self.len()` elements by definition
+        // - `src` was checked to have the same length
+        // - The slices cannot overlap because mutable references are exclusive
+        // - Data races are impossible because `Cell: !Sync`
+        unsafe {
+            ptr::swap(self_ptr, other, len);
+        }
+    }
+
+    /// Swaps all elements in `self` with the cells inside `other`.
+    ///
+    /// The length of `other` must be the same as `self`.
+    ///
+    /// # Panics
+    ///
+    /// This function will panic if the two slices have different lengths.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::cell::Cell;
+    /// #![feature(copy_slice_of_cells)]
+    /// // In real code, this slice of cells might come from elsewhere.
+    /// let other: &Cell<[_]> = &Cell::new([5, 6, 7, 8]);
+    /// let other = other.as_slice_of_cells();
+    /// let mut slice = [0, 1, 2, 3];
+    ///
+    /// slice[1..3].swap_with_slice_of_cells(&other[..2]);
+    /// assert_eq!(slice, [0, 5, 6, 3]);
+    /// assert_eq!(other, Cell::new([5, 1, 2, 8]).as_slice_of_cells());
+    ///
+    /// // Because src and dst are the same length and can't alias,
+    /// // this is semantically the same thing:
+    /// slice[1..3]
+    ///     .iter_mut()
+    ///     .zip(other[..2].iter())
+    ///     .for_each(|(a, b)| Cell::from_mut(a).swap(b));
+    /// ```
+    #[unstable(feature = "copy_slice_of_cells", issue = "none")] // TODO: ISSUE
+    #[track_caller]
+    pub fn swap_cells_with_slice_of_cells(&self, other: &[Cell<T>]) {
+        assert!(self.len() == other.len(), "destination and source slices have different lengths");
+        let other = slice_of_cells_as_mut_ptr(other);
+        // SAFETY: `self` is valid for `self.len()` elements by definition, and `src` was
+        // checked to have the same length. The slices cannot overlap because
+        // mutable references are exclusive. Data races are impossible because `Cell: !Sync`.
+        unsafe {
+            ptr::swap_nonoverlapping(self.as_mut_ptr(), other, self.len());
+        }
+    }
+
+    // swap_cells_with_slice
+    // swap_cells_with_slice_of_cells
+}
+
 #[cfg(not(test))]
 impl [f32] {
     /// Sorts the slice of floats.
@@ -4729,6 +5026,16 @@ fn get_many_check_valid<const N: usize>(indices: &[usize; N], len: usize) -> boo
         }
     }
     valid
+}
+
+/// Returns a raw pointer that can mutate all elements in a slice of cells.
+#[inline(always)]
+fn slice_of_cells_as_mut_ptr<T>(x: &[Cell<T>]) -> *mut T {
+    // The output pointer has the same provenance as the input slice,
+    // and `Cell::as_ptr` is used to access the mutable raw pointer from
+    // a shared reference.
+    // SAFETY: `[Cell<T>]` and `Cell<[T]>` have identical layout, mutability, and pointer metadata.
+    unsafe { &*(x as *const [Cell<T>] as *const Cell<[T]>) }.as_ptr().cast()
 }
 
 // The panic code path was put into a cold function to not bloat the
