@@ -1986,6 +1986,7 @@ symbols! {
         underscore_const_names,
         underscore_imports,
         underscore_lifetimes,
+        underscore_variants,
         uniform_paths,
         unimplemented_macro,
         unit,

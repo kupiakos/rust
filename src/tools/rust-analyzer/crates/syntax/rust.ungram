@@ -259,7 +259,7 @@ VariantList =
 
 Variant =
   Attr* Visibility?
-  Name FieldList? ('=' Expr)?
+  (Name | '_') FieldList? ('=' Expr)?
 
 Union =
   Attr* Visibility?

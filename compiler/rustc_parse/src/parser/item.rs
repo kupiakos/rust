@@ -1546,8 +1546,9 @@ impl<'a> Parser<'a> {
         self.recover_vcs_conflict_marker();
         let variant_attrs = self.parse_outer_attributes()?;
         self.recover_vcs_conflict_marker();
-        let help = "enum variants can be `Variant`, `Variant = <integer>`, \
-                    `Variant(Type, ..., TypeN)` or `Variant { fields: Types }`";
+        const HELP: &str = "enum variants can be `Variant`, `Variant = <integer>`, \
+                    `Variant(Type, ..., TypeN)`, `Variant { fields: Types }`, \
+                    or `_ = <range-or-integer>`";
         self.collect_tokens(None, variant_attrs, ForceCollect::No, |this, variant_attrs| {
             let vlo = this.token.span;
 
@@ -1555,7 +1556,13 @@ impl<'a> Parser<'a> {
             if !this.recover_nested_adt_item(kw::Enum)? {
                 return Ok((None, Trailing::No, UsePreAttrPos::No));
             }
-            let ident = this.parse_field_ident("enum", vlo)?;
+            let ident = if let Some((ident, _)) = this.token.ident() && ident.name == kw::Underscore {
+                // TODO: feature gate
+                this.bump();
+                ident
+            } else {
+                this.parse_field_ident("enum", vlo)?
+            };
 
             if this.token == token::Not {
                 if let Err(err) = this.unexpected() {
@@ -1581,7 +1588,7 @@ impl<'a> Parser<'a> {
                             this.eat_to_tokens(&[&token::CloseDelim(Delimiter::Brace)]);
                             this.bump(); // }
                             err.span_label(span, "while parsing this enum");
-                            err.help(help);
+                            err.help(HELP);
                             let guar = err.emit();
                             (thin_vec![], Recovered::Yes(guar))
                         }
@@ -1598,7 +1605,7 @@ impl<'a> Parser<'a> {
                         this.eat_to_tokens(&[&token::CloseDelim(Delimiter::Parenthesis)]);
                         this.bump(); // )
                         err.span_label(span, "while parsing this enum");
-                        err.help(help);
+                        err.help(HELP);
                         err.emit();
                         thin_vec![]
                     }
@@ -1625,7 +1632,7 @@ impl<'a> Parser<'a> {
             Ok((Some(vr), Trailing::from(this.token == token::Comma), UsePreAttrPos::No))
         })
         .map_err(|mut err| {
-            err.help(help);
+            err.help(HELP);
             err
         })
     }

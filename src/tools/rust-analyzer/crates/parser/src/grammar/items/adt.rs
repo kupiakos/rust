@@ -85,24 +85,28 @@ pub(crate) fn variant_list(p: &mut Parser<'_>) {
     fn variant(p: &mut Parser<'_>) {
         let m = p.start();
         attributes::outer_attrs(p);
+
         if p.at(IDENT) {
             name(p);
-            match p.current() {
-                T!['{'] => record_field_list(p),
-                T!['('] => tuple_field_list(p),
-                _ => (),
-            }
-
-            // test variant_discriminant
-            // enum E { X(i32) = 10 }
-            if p.eat(T![=]) {
-                expressions::expr(p);
-            }
-            m.complete(p, VARIANT);
+        } else if p.at(T![_]) {
+            p.bump(T![_]);
         } else {
             m.abandon(p);
             p.err_and_bump("expected enum variant");
+            return;
         }
+        match p.current() {
+            T!['{'] => record_field_list(p),
+            T!['('] => tuple_field_list(p),
+            _ => (),
+        }
+
+        // test variant_discriminant
+        // enum E { X(i32) = 10 }
+        if p.eat(T![=]) {
+            expressions::expr(p);
+        }
+        m.complete(p, VARIANT);
     }
 }
 
